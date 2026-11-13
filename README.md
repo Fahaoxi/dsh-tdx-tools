@@ -1,31 +1,16 @@
 # dsh-tdx-tools
 
-DeepSeek Harness 插件：将通达信 MCP 行情服务注册为原生工具，覆盖**期权链、K 线、实时行情**。
-
-与直接使用 `@deepseek-ai/dsh-mcp-client` 桥接相比，本插件的核心差异是**内置 MCP 会话自愈**——无需人工干预即可从会话失效中恢复。
+DeepSeek Harness 插件：将通达信 MCP 行情服务注册为原生工具，提供**期权链、K 线、实时行情**三类数据能力，并内置 MCP 会话自愈。
 
 ---
 
-## 背景
+## 特点
 
-通达信 MCP 服务端会对空闲会话执行回收。会话失效后，后续调用统一返回：
-
-```json
-{"jsonrpc":"2.0","error":{"code":-32000,
-  "message":"Session not found or expired",
-  "data":{"errorType":"MCP_SESSION_EXPIRED",
-          "retryable":true,"requiresInitialize":true}}}
-```
-
-该状态下有三个容易误判的点：
-
-- **HTTP 连接仍然存活**，因此基于断线检测的 `reconnect` 机制不会触发
-- MCP SDK 未实现「检测会话失效 → 重新握手」的自动恢复路径
-- `retryable: true` 描述的是**会话可重建**，而非**请求可重放**；直接重试同一调用不会成功
-
-最终表现为工具间歇性不可用，且重试无效——只有重新执行 `initialize` 才能恢复。
-
-本插件在每次取数前检查响应状态（`404` / `400` / `-32000`），命中后自动重新握手并重放一次。返回结果中的 `reinitCount` 字段记录本次调用触发自愈的次数，便于观测服务端会话稳定性。
+- **四个开箱可用的工具**：期权链、可交易月份、K 线、实时行情快照
+- **会话自愈**：检测到服务端会话失效时自动重新握手并重放，无需人工干预
+- **原生调用**：工具直接进入模型工具列表，与内置工具同等使用
+- **失败即报错**：取数异常时返回明确错误码，不以空值或推测值替代
+- **即插即用**：复用宿主 Node 运行时，无需额外依赖
 
 ---
 
@@ -37,7 +22,7 @@ dsh plugin --profile desktop add github:Fahaoxi/dsh-tdx-tools
 
 安装后需**重启 dsh web**。工具注册发生在插件加载阶段，已建立的会话不会自动获得新工具。
 
-要求 Node.js ≥ 18（复用宿主运行时，无需额外安装）。
+要求 Node.js ≥ 18。
 
 ---
 
@@ -65,9 +50,9 @@ export TDX_MCP_TOKEN="<your-token>"
 
 | 工具 | 用途 | 关键参数 |
 |---|---|---|
-| `tdx_chain` | 获取指定月份的完整期权链：各档行权价、看涨/看跌合约代码、隐含波动率、Greeks、到期日 | `month`（必填） |
+| `tdx_chain` | 获取指定月份的完整期权链：各档行权价、看涨/看跌合约代码、隐含波动率、Greeks、到期日 | `month`、`underly` |
 | `tdx_months` | 列出当前可交易的期权月份及到期日 | `underly` |
-| `tdx_kline` | 日 / 周 / 月 K 线 | `period`（`4` = 日线） |
+| `tdx_kline` | 日 / 周 / 月 K 线 | `code`、`period`（`4` = 日线） |
 | `tdx_quote` | 实时行情快照，含买卖五档 | `code`、`setcode` |
 
 ### 推荐调用顺序
@@ -93,6 +78,19 @@ tdx_months  →  tdx_chain(month)  →  tdx_quote(setcode=9) 逐腿获取实际�
 | `1` | 上海证券交易所 |
 | `9` | 期权单腿 |
 | `31` | 香港交易所 |
+
+---
+
+## 返回字段
+
+每次调用除业务数据外，还包含以下元信息：
+
+| 字段 | 说明 |
+|---|---|
+| `kind` | 数据类型：`chain` / `months` / `kline` / `quote` |
+| `fetchedAt` | 取数时间（ISO 8601） |
+| `source` | 数据来源标识 |
+| `reinitCount` | 本次调用触发会话自愈的次数；`0` 表示会话正常 |
 
 ---
 
