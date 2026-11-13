@@ -1,0 +1,47 @@
+{
+  "name": "dsh-tdx-tools",
+  "version": "0.1.0",
+  "description": "DSH 插件：把通达信 MCP 的期权链 / K 线 / 实时行情注册为工具，自带 MCP 会话自愈（-32000 自动重新握手）。",
+  "type": "module",
+  "main": "index.js",
+  "license": "MIT",
+  "author": "",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "mcp",
+    "tdx",
+    "tongdaxin",
+    "options",
+    "quant"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Fahaoxi/dsh-tdx-tools.git"
+  },
+  "homepage": "https://github.com/Fahaoxi/dsh-tdx-tools#readme",
+  "bugs": {
+    "url": "https://github.com/Fahaoxi/dsh-tdx-tools/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "exports": {
+    ".": "./index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "scripts/tdx_fetch.cjs",
+    "README.md",
+    "LICENSE"
+  ]
+}
