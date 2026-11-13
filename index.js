@@ -1,19 +1,18 @@
 /**
- * dsh-tdx-tools — 把本项目的通达信取数能力注册为 DSH 工具。
+ * dsh-tdx-tools — 将通达信 MCP 行情服务注册为 DeepSeek Harness 原生工具。
  *
- * 为什么是薄壳：
- *   真正的取数逻辑（MCP 握手、会话自愈、SSE 解析、文本抠 JSON）已经在
- *   scripts/tdx_fetch.js 里验证过，这里只做进程调用 + 结果整形，不重复实现。
- *   计算仍留在 Python engine/*，插件不碰。
+ * 设计要点：
+ *   取数逻辑由包内 scripts/tdx_fetch.cjs 承担（MCP 握手、会话自愈、
+ *   SSE 解析、结构化提取）；本模块只负责进程调用与结果整形。
  *
- * 契约（照 dsh-ops 的写法）：
+ * 契约（与 dsh-ops 一致）：
  *   cordis.patch.yml insert 一行 {id, name:'dsh-tdx-tools'}
  *   → loader 加载本包 main，调用 apply(ctx, config)
- *   → inject=['tools']，通过 ctx.tools.register 注册 4 个工具
+ *   → inject=['tools']，通过 ctx.tools.register 注册工具
  *
- * 与 MCP 桥接（@deepseek-ai/dsh-mcp-client）的区别：
- *   MCP 桥把 tdx 的 20 个工具原样暴露给模型，但会话失效时 SDK 不会自动重建；
- *   本插件走 tdx_fetch.js，自带「-32000 → 重新 initialize → 重放」自愈。
+ * 与 MCP 桥接（@deepseek-ai/dsh-mcp-client）的差异：
+ *   MCP 桥接原样暴露服务端工具，但会话失效时 SDK 不会自动重建；
+ *   本插件走 tdx_fetch.cjs，内置「失效 → 重新 initialize → 重放」自愈。
  */
 
 export const name = 'dsh-tdx-tools';
@@ -149,18 +148,18 @@ export function apply(ctx, config = {}) {
     {
       name: 'tdx_chain',
       description:
-        '拉取创业板ETF(159915)某月完整期权链（含每一档行权价、看涨/看跌合约代码、IV、Greeks、expiredDate）。'
-        + '这是 IV/HV 信号系统的唯一权威链数据来源。month 必填，形如 2611；不确定时先调 tdx_months。'
-        + '返回 tdx-connector 原始快照，落盘可版本化。',
+        '获取指定月份的完整期权链，包含各档行权价、看涨/看跌合约代码、隐含波动率、'
+        + 'Greeks 与到期日。month 为必填项，格式如 2611；月份不确定时应先调用 tdx_months。'
+        + '返回服务端原始快照，可用于落盘与回溯分析。',
       parameters: {
         type: 'object',
         properties: {
-          month: { type: 'string', description: '期权月份，4 位如 2611。先调 tdx_months 获取可选月份。' },
-          underly: { type: 'string', description: '标的中文代码，默认 159915。' },
-          underlyMarket: { type: 'string', description: '标的市场代码，默认 0（深市）。' },
-          wantNum: { type: 'number', description: '拉取档位数，默认 100。必须足够大，否则只剩远虚值档。' },
+          month: { type: 'string', description: '期权月份，4 位如 2611。建议先经 tdx_months 确认。' },
+          underly: { type: 'string', description: '标的代码，如 510050（上证50ETF）、510300（沪深300ETF）。' },
+          underlyMarket: { type: 'string', description: '标的市场代码，0=深圳、1=上海。' },
+          wantNum: { type: 'number', description: '返回档位数，默认 100。取值过小将只得到远虚值档位。' },
         },
-        required: ['month'],
+        required: ['month', 'underly'],
         additionalProperties: false,
       },
       argv: (args) => {
@@ -174,13 +173,14 @@ export function apply(ctx, config = {}) {
     {
       name: 'tdx_months',
       description:
-        '列出某标的当前可交易的期权月份。拉期权链前先用它确认月份，不要猜。',
+        '列出指定标的当前可交易的期权月份及各自到期日。调用 tdx_chain 前应先通过本工具确认月份。',
       parameters: {
         type: 'object',
         properties: {
-          underly: { type: 'string', description: '标的中文代码，默认 159915。' },
-          underlyMarket: { type: 'string', description: '标的市场代码，默认 0（深市）。' },
+          underly: { type: 'string', description: '标的代码，如 510050（上证50ETF）、510300（沪深300ETF）。' },
+          underlyMarket: { type: 'string', description: '标的市场代码，0=深圳、1=上海。' },
         },
+        required: ['underly'],
         additionalProperties: false,
       },
       argv: (args) => {
@@ -193,20 +193,21 @@ export function apply(ctx, config = {}) {
     {
       name: 'tdx_kline',
       description:
-        '拉取日线/周线/月线 K 线。用于算 HV10/HV20/HV60 与趋势结构（均线排列、距 MA20）。'
-        + '注意：T 的起算日是最后一根 K 线的日期，不是抓取日。',
+        '获取日线 / 周线 / 月线 K 线数据，可用于计算历史波动率与判断趋势结构。'
+        + '注意：时间区间的起点是最后一根 K 线所对应的交易日，而非取数当日。',
       parameters: {
         type: 'object',
         properties: {
-          code: { type: 'string', description: '证券代码，默认 159915。' },
-          setcode: { type: 'string', description: '市场：0=深市 1=沪市 9=期权腿，默认 0。' },
-          period: { type: 'string', description: '周期：4=日线(默认) 5=周线 6=月线。' },
-          count: { type: 'number', description: 'K 线根数，默认 90。算 HV60 至少给 70。' },
+          code: { type: 'string', description: '证券代码，如 510050（上证50ETF）、510300（沪深300ETF）。' },
+          setcode: { type: 'string', description: '市场代码：0=深圳 1=上海 9=期权单腿，默认 0。' },
+          period: { type: 'string', description: '周期：4=日线（默认）、5=周线、6=月线。' },
+          count: { type: 'number', description: '返回 K 线根数，默认 90。' },
         },
+        required: ['code'],
         additionalProperties: false,
       },
       argv: (args) => {
-        const out = ['kline', '--code', String(args.code ?? '159915'), '--setcode', String(args.setcode ?? '0')];
+        const out = ['kline', '--code', String(args.code), '--setcode', String(args.setcode ?? '0')];
         if (args.period) out.push('--period', String(args.period));
         out.push('--count', String(args.count ?? 90));
         return out;
@@ -215,13 +216,13 @@ export function apply(ctx, config = {}) {
     {
       name: 'tdx_quote',
       description:
-        '拉取实时行情快照（最新价、买卖五档、成交量）。用于拿标的现价，或按 setcode=9 逐腿拉期权真实买卖价——'
-        + 'T-quote 的 NOW 不是盘口价，要真实 bid/ask 必须用这个。',
+        '获取实时行情快照，包含最新价、买卖五档与成交量。'
+        + '需要期权单腿的真实买卖报价时应指定 setcode=9 —— T-quote 返回的 NOW 字段并非盘口价。',
       parameters: {
         type: 'object',
         properties: {
-          code: { type: 'string', description: '证券代码，如 159915 或期权腿 8 位代码。' },
-          setcode: { type: 'string', description: '市场：0=深市 1=沪市 9=期权腿，默认 0。' },
+          code: { type: 'string', description: '证券代码，如 510050，或 8 位期权合约代码。' },
+          setcode: { type: 'string', description: '市场代码：0=深圳 1=上海 9=期权单腿，默认 0。' },
         },
         required: ['code'],
         additionalProperties: false,
