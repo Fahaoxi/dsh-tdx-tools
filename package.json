@@ -1,7 +1,7 @@
 {
   "name": "dsh-tdx-tools",
   "version": "0.1.0",
-  "description": "DSH 插件：把通达信 MCP 的期权链 / K 线 / 实时行情注册为工具，自带 MCP 会话自愈（-32000 自动重新握手）。",
+  "description": "DeepSeek Harness 插件：将通达信 MCP 行情服务注册为原生工具，覆盖期权链、K 线与实时行情，内置 MCP 会话自愈。",
   "type": "module",
   "main": "index.js",
   "license": "MIT",
