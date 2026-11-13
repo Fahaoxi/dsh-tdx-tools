@@ -9,10 +9,10 @@
  *   本脚本在检测到 -32000 / 404 时自动重新 initialize 并重放，实测可完全消除该故障。
  *
  * 用法：
- *   node tdx_fetch.js chain   --month 2611 --underly 159915 [--out data/xxx.json]
- *   node tdx_fetch.js kline   --code 159915 --setcode 0 [--count 90]
- *   node tdx_fetch.js quote   --code 159915 --setcode 0
- *   node tdx_fetch.js months  --underly 159915
+ *   node tdx_fetch.cjs chain   --month 2611 --underly <code> [--out out.json]
+ *   node tdx_fetch.cjs kline   --code <code> --setcode 0 [--count 90]
+ *   node tdx_fetch.cjs quote   --code <code> --setcode 0
+ *   node tdx_fetch.cjs months  --underly <code>
  *
  * 输出：统一 JSON 到 stdout（或 --out 指定文件）
  *
@@ -226,6 +226,13 @@ function parseArgs(argv) {
   return out;
 }
 
+/** 证券代码为必填项——不设默认值，避免把某个特定标的写死进通用工具。 */
+function requireCode(args) {
+  const code = args.code;
+  if (!code) throw new Error('缺少 --code <证券代码>');
+  return String(code);
+}
+
 function writeOutput(obj, outPath) {
   const text = JSON.stringify(obj, null, 2);
   if (outPath) {
@@ -255,7 +262,8 @@ async function main() {
 
     if (cmd === 'months') {
       const underlyMarket = args.underlyMarket || '0';
-      const underlyCode = args.underly || '159915';
+      const underlyCode = args.underly;
+      if (!underlyCode) throw new Error('months 需要 --underly <标的代码>');
       const json = await client.callTool('tdx_option_t_quote', {
         underlyMarket,
         underlyCode,
@@ -264,7 +272,8 @@ async function main() {
       payload = { kind: 'months', fetchedAt, underlyMarket, underlyCode, text: stripTail(extractText(json)), raw: json };
     } else if (cmd === 'chain') {
       const underlyMarket = args.underlyMarket || '0';
-      const underlyCode = args.underly || '159915';
+      const underlyCode = args.underly;
+      if (!underlyCode) throw new Error('chain 需要 --underly <标的代码>');
       if (!args.month) throw new Error('chain 需要 --month（先用 months 子命令查可选月份）');
       const argv2 = {
         underlyMarket,
@@ -289,7 +298,7 @@ async function main() {
       };
     } else if (cmd === 'kline') {
       const json = await client.callTool('tdx_kline', {
-        code: String(args.code || '159915'),
+        code: requireCode(args),
         setcode: String(args.setcode || '0'),
         period: String(args.period || '4'),
         wantNum: Number(args.count || 90),
@@ -299,7 +308,7 @@ async function main() {
       payload = {
         kind: 'kline',
         fetchedAt,
-        code: String(args.code || '159915'),
+        code: requireCode(args),
         setcode: String(args.setcode || '0'),
         source: 'tdx-connector',
         textHead: text.split('\n').slice(0, 3).join('\n'),
@@ -308,12 +317,12 @@ async function main() {
       };
     } else if (cmd === 'quote') {
       const json = await client.callTool('tdx_quotes', {
-        code: String(args.code || '159915'),
+        code: requireCode(args),
         setcode: String(args.setcode || '0'),
       });
       const text = stripTail(extractText(json));
       const parsed = extractJsonBlock(text);
-      payload = { kind: 'quote', fetchedAt, code: String(args.code || '159915'), setcode: String(args.setcode || '0'), source: 'tdx-connector', textHead: text.split('\n').slice(0, 2).join('\n'), data: parsed };
+      payload = { kind: 'quote', fetchedAt, code: requireCode(args), setcode: String(args.setcode || '0'), source: 'tdx-connector', textHead: text.split('\n').slice(0, 2).join('\n'), data: parsed };
     } else {
       throw new Error(`未知子命令: ${cmd}`);
     }
