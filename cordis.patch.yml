@@ -1,0 +1,6 @@
+# dsh-tdx-tools bundle patch: 只 insert 一行，注册插件自身。
+# 不改动任何既有行（cordis patch 是整行替换，覆盖 skill-filesystem 会清空
+# home 级 customSkillDirs，覆盖 mcp-tdx 会打断现有 MCP 连接）。
+- insert:
+    - id: dsh-tdx-tools
+      name: 'dsh-tdx-tools'
