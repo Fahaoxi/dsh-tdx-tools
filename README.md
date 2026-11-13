@@ -1,129 +1,147 @@
 # dsh-tdx-tools
 
-把**通达信 MCP（tdx-connector）** 的期权链、K 线、实时行情注册为 DeepSeek Harness 工具。
+DeepSeek Harness 插件：将通达信 MCP 行情服务注册为原生工具，覆盖**期权链、K 线、实时行情**。
 
-相比直接用 `@deepseek-ai/dsh-mcp-client` 桥接，本插件的核心差异是：**自带 MCP 会话自愈**。
+与直接使用 `@deepseek-ai/dsh-mcp-client` 桥接相比，本插件的核心差异是**内置 MCP 会话自愈**——无需人工干预即可从会话失效中恢复。
 
 ---
 
-## 为什么需要它
+## 背景
 
-TDX 服务端会主动回收空闲的 MCP 会话。之后每次调用都返回：
+通达信 MCP 服务端会对空闲会话执行回收。会话失效后，后续调用统一返回：
 
 ```json
-{"code":-32000,"message":"Session not found or expired",
- "data":{"errorType":"MCP_SESSION_EXPIRED","retryable":true,"requiresInitialize":true}}
+{"jsonrpc":"2.0","error":{"code":-32000,
+  "message":"Session not found or expired",
+  "data":{"errorType":"MCP_SESSION_EXPIRED",
+          "retryable":true,"requiresInitialize":true}}}
 ```
 
-实测空闲 **十几分钟到一小时** 就会掉，且 TTL 不稳定。关键点：
+该状态下有三个容易误判的点：
 
-- 此时 **HTTP 连接本身还活着**，所以 `reconnect` 配置不会触发（它只在连接断开时生效）
-- MCP SDK 没有「检测到会话失效 → 自动重新 initialize」的分支
-- `retryable: true` 是**误导字段**：它指「会话可以重建」，不是「重发这个请求就能成功」
+- **HTTP 连接仍然存活**，因此基于断线检测的 `reconnect` 机制不会触发
+- MCP SDK 未实现「检测会话失效 → 重新握手」的自动恢复路径
+- `retryable: true` 描述的是**会话可重建**，而非**请求可重放**；直接重试同一调用不会成功
 
-结果就是「时好时坏」——重试无效，只能重新握手。
+最终表现为工具间歇性不可用，且重试无效——只有重新执行 `initialize` 才能恢复。
 
-本插件在每次取数前检测 `404 / 400 / -32000`，命中就**重新 initialize 并重放一次**，把这个问题消除掉。返回结构里的 `reinitCount` 会告诉你本次触发了几次自愈。
+本插件在每次取数前检查响应状态（`404` / `400` / `-32000`），命中后自动重新握手并重放一次。返回结果中的 `reinitCount` 字段记录本次调用触发自愈的次数，便于观测服务端会话稳定性。
 
 ---
 
 ## 安装
 
 ```sh
-dsh plugin --profile desktop add github:<your-name>/dsh-tdx-tools
+dsh plugin --profile desktop add github:Fahaoxi/dsh-tdx-tools
 ```
 
-安装后**重启 dsh web**。工具注册发生在插件加载时，已打开的会话不会自动拿到新工具。
+安装后需**重启 dsh web**。工具注册发生在插件加载阶段，已建立的会话不会自动获得新工具。
+
+要求 Node.js ≥ 18（复用宿主运行时，无需额外安装）。
 
 ---
 
 ## 配置
 
-设置环境变量 `TDX_MCP_TOKEN`（自备，通达信 MCP token）：
+通过环境变量提供通达信 MCP token：
 
-```sh
-# Windows (PowerShell)
-$env:TDX_MCP_TOKEN = "TDX-xxxxxxxxxxxx"
+```powershell
+# Windows PowerShell
+$env:TDX_MCP_TOKEN = "<your-token>"
 ```
 
-带不带 `Bearer ` 前缀都可以，插件会自动补。**token 不写入任何文件，也不打印。**
+```sh
+# Linux / macOS
+export TDX_MCP_TOKEN="<your-token>"
+```
 
-> 没有 token 时工具会明确报「未配置凭据」，不会返回任何伪造数据。
+`Bearer ` 前缀可省略，插件会自动补全。**token 仅存在于进程内存，不写入磁盘、不输出到日志。**
+
+未配置 token 时，工具返回明确的配置错误，不会返回任何替代数据。
 
 ---
 
 ## 工具
 
-| 工具 | 说明 | 关键参数 |
+| 工具 | 用途 | 关键参数 |
 |---|---|---|
-| `tdx_chain` | 某月完整期权链（每档行权价、合约代码、IV、Greeks、`expiredDate`） | `month`（必填） |
-| `tdx_months` | 当前可交易月份列表 | `underly` |
-| `tdx_kline` | 日/周/月 K 线 | `period`（4=日线） |
-| `tdx_quote` | 实时行情快照（含买卖五档） | `code`、`setcode` |
+| `tdx_chain` | 获取指定月份的完整期权链：各档行权价、看涨/看跌合约代码、隐含波动率、Greeks、到期日 | `month`（必填） |
+| `tdx_months` | 列出当前可交易的期权月份及到期日 | `underly` |
+| `tdx_kline` | 日 / 周 / 月 K 线 | `period`（`4` = 日线） |
+| `tdx_quote` | 实时行情快照，含买卖五档 | `code`、`setcode` |
 
-### 典型调用顺序
+### 推荐调用顺序
 
 ```
-tdx_months  →  tdx_chain(month)  →  tdx_quote(setcode=9) 逐腿取真实买卖价
+tdx_months  →  tdx_chain(month)  →  tdx_quote(setcode=9) 逐腿获取实际盘口
 ```
 
-**期权链要两步**：先 `tdx_months` 拿月份，再 `tdx_chain`。不要猜月份。
+期权链为**两步调用**：先由 `tdx_months` 取得可用月份，再以该月份调用 `tdx_chain`。月份不应推测。
 
-**`wantNum` 要给大**（默认 100）。服务端从最高行权价往下返回，给小了只剩远虚值档。
+`wantNum` 建议保持较大值（默认 100）：服务端按行权价从高到低返回，取值过小将只得到远虚值档位。
 
-### 两个容易踩的坑
+### 使用注意
 
-- **T-quote 的 `NOW` 不是盘口价**。要真实 bid/ask，按腿单独调 `tdx_quote`，`setcode=9`。
-- **T-quote 自带的 Greeks 和它自己显示的 IV 不自洽**，需要时用 BSM 自行重算（r=0，T=日历日/365）。
+- **T-quote 的 `NOW` 字段不是盘口价**。需要真实买卖报价时，应对单腿调用 `tdx_quote` 并指定 `setcode=9`。
+- **T-quote 返回的 Greeks 与其展示的 IV 不自洽**。如需用于定价或风险计算，应以 BSM 重新计算（无风险利率取 0，T 按日历日 / 365）。
 
 ### setcode 对照
 
 | 值 | 市场 |
 |---|---|
-| `0` | 深市（159915 等） |
-| `1` | 沪市 |
-| `9` | 期权腿 |
-| `31` | 港股 |
+| `0` | 深圳证券交易所 |
+| `1` | 上海证券交易所 |
+| `9` | 期权单腿 |
+| `31` | 香港交易所 |
 
 ---
 
 ## 错误处理
 
-取数失败返回 `{ ok: false, code, text }`，`code` 取值：
+取数失败时返回 `{ ok: false, code, text }`：
 
 | code | 含义 |
 |---|---|
-| `SPAWN_FAILED` | 子进程起不来（Node 缺失或被杀） |
-| `TIMEOUT` | 超过 90s |
-| `FETCH_FAILED` | 端点报错（含 401 配额不足、会话问题） |
-| `BAD_JSON` | 输出了非法 JSON |
+| `SPAWN_FAILED` | 子进程无法启动（运行时缺失或被终止） |
+| `TIMEOUT` | 超过 90 秒未返回 |
+| `FETCH_FAILED` | 服务端返回错误（含 401 配额不足、会话异常） |
+| `BAD_JSON` | 返回内容无法解析为 JSON |
 
-**配额不足** 会返回：
+**配额不足**时服务端返回：
 
 ```
 TDX MCP quota is below 10. Please recharge before continuing.
-leftValue: 4
+leftValue: <remaining>
 ```
 
-到 <https://vip.tdx.com.cn> 充值即可，不需要改任何配置。
+在 <https://vip.tdx.com.cn> 充值后即可恢复，无需修改配置。
 
-设计上**失败就是失败**——文案明确写「这不是空数据，是没取到数据」，绝不编造数字。
+插件遵循**失败即失败**原则：取数异常时返回明确错误，不以空值或推测值替代，避免下游误判。
 
 ---
 
 ## 配置项
 
-插件 `apply(ctx, config)` 接受：
+`apply(ctx, config)` 支持以下可选字段：
 
-| 字段 | 默认 | 说明 |
+| 字段 | 默认值 | 说明 |
 |---|---|---|
-| `scriptPath` | 包内 `scripts/tdx_fetch.js` | 显式指定取数脚本 |
-| `projectRoot` | — | 指定后改用 `<projectRoot>/scripts/tdx_fetch.js` |
+| `scriptPath` | 包内 `scripts/tdx_fetch.cjs` | 指定自定义取数脚本 |
+| `projectRoot` | — | 指定后使用 `<projectRoot>/scripts/tdx_fetch.cjs` |
 
-一般不需要配置。
+通常无需配置。
+
+---
+
+## 兼容性
+
+- 与 `@deepseek-ai/dsh-mcp-client` 可共存，互不干扰
+- 不修改任何既有配置行（`cordis.patch.yml` 仅注册自身）
 
 ---
 
 ## 许可
 
-MIT。与通达信官方无关联，token 由使用者自行申请。
+MIT License。
+
+本项目为非官方插件，与通达信官方无隶属或合作关系。使用通达信 MCP 服务需自行申请并遵守其服务条款。
