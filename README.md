@@ -1,16 +1,16 @@
 # dsh-tdx-tools
 
-DeepSeek Harness 插件：将通达信 MCP 行情服务注册为原生工具，提供**实时行情、K 线、期权链**三类数据能力。
+DeepSeek Harness 插件：将通达信 MCP 行情服务注册为 **13 个原生工具**，覆盖实时行情、K 线、期权链、条件选股、F10 财务、财经资讯与宏观数据。
 
 ---
 
 ## 特点
 
-- **常驻会话**：整个 DSH 进程共用一条 MCP 会话，不必每次调用重新握手
-- **会话自愈**：检测到服务端回收会话时自动重建并重放，无需人工干预
-- **并发安全**：多个工具同时调用互不干扰，共享同一次握手
-- **失败即报错**：区分未配置 / 配额不足 / 会话失效 / 超时，给出可操作建议
-- **即插即用**：复用宿主 Node 运行时，无需额外依赖
+- **13 个工具**：行情 / K 线 / 期权链 / 代码检索 / 选股 / 指标 / F10 / 资讯 / 公告 / 研报 / 宏观
+- **常驻会话**：整个 DSH 进程共用一条 MCP 会话，后续调用约 150ms
+- **会话自愈**：服务端回收会话时自动重建并重放；并发失效只触发一次握手
+- **响应整形**：自动剥离元数据信封、还原表格、超长截断，节省 40% 以上上下文
+- **失败即报错**：区分未配置 / 配额不足 / 会话失效 / 超时，各带可操作建议
 
 ---
 
@@ -42,31 +42,66 @@ export TDX_MCP_TOKEN="<your-token>"
 
 `Bearer ` 前缀可省略，插件会自动补全。**token 仅存在于进程内存，不写入磁盘、不输出到日志。**
 
-未配置 token 时，工具返回 `NO_TOKEN` 错误并提示如何配置，不会返回任何替代数据。
+未配置时返回 `NO_TOKEN` 错误并提示配置方式，不会返回任何替代数据。
 
 ---
 
 ## 工具
 
+### 行情与走势
+
 | 工具 | 用途 | 关键参数 |
 |---|---|---|
 | `tdx_quote` | 实时行情快照，含买卖五档 | `code`、`setcode` |
 | `tdx_kline` | 日 / 周 / 月 K 线 | `code`、`period`（`4` = 日线） |
+
+### 期权
+
+| 工具 | 用途 | 关键参数 |
+|---|---|---|
 | `tdx_months` | 可交易期权月份及到期日 | `underly` |
-| `tdx_chain` | 某月完整期权链：行权价、合约代码、IV、Greeks、到期日 | `month`、`underly` |
+| `tdx_chain` | 某月完整期权链：行权价、合约代码、IV、Greeks | `month`、`underly` |
 
-### 推荐调用顺序
+### 检索与筛选
+
+| 工具 | 用途 | 关键参数 |
+|---|---|---|
+| `tdx_lookup` | 名称 → 证券代码（调用其他工具前确认代码） | `query`、`range` |
+| `tdx_screener` | 按自然语言条件选股（涨停 / 净流入 / MACD 金叉） | `message` |
+| `tdx_indicator` | 已知证券的 PE / PB / ROE / 市值 / 股息率等 | `message` |
+
+### 深度数据
+
+| 工具 | 用途 | 关键参数 |
+|---|---|---|
+| `tdx_f10` | F10：财报 / 股东 / 资金流 / 分红 / 龙虎榜 | `entry`、`code`、`fixedTag` |
+
+### 资讯
+
+| 工具 | 用途 | 关键参数 |
+|---|---|---|
+| `tdx_listening` | 单标的 24 小时资讯聚合与多空事件 | `code`（如 `1_600519`） |
+| `tdx_news` | 新闻、快讯、主题热点 | `name`、`bdate`、`edate` |
+| `tdx_notice` | 上市公司公告 | `name`、`bdate`、`edate` |
+| `tdx_report` | 券商研报、评级、目标价 | `name`、`bdate`、`edate` |
+| `tdx_macro` | GDP / CPI / PPI / M2 / 利率等 | `query`（管道格式） |
+
+### 典型流程
 
 ```
-tdx_months  →  tdx_chain(month)  →  tdx_quote(setcode=9) 逐腿获取实际盘口
+不确定代码      →  tdx_lookup
+看某只股票      →  tdx_quote + tdx_kline + tdx_indicator
+查基本面        →  tdx_f10（entry=TdxShareCW.ph_agf10_cw_lyb）
+找一批股票      →  tdx_screener
+期权链          →  tdx_months → tdx_chain → tdx_quote(setcode=9) 逐腿取盘口
+了解近期消息    →  tdx_listening / tdx_news / tdx_notice / tdx_report
 ```
-
-期权链为**两步调用**：先由 `tdx_months` 取得可用月份，再以该月份调用 `tdx_chain`。月份不应推测。
 
 ### 使用注意
 
-- **T-quote 的 `NOW` 字段不是盘口价**。需要真实买卖报价时，应对单腿调用 `tdx_quote` 并指定 `setcode=9`。
-- **T-quote 返回的 Greeks 与其展示的 IV 不自洽**。如需用于定价或风险计算，应以 BSM 重新计算（无风险利率取 0，T 按日历日 / 365）。
+- **T-quote 的 `NOW` 字段不是盘口价**。需要真实买卖报价时，对单腿调用 `tdx_quote` 并指定 `setcode=9`。
+- **T-quote 的 Greeks 与其展示的 IV 不自洽**。用于定价或风控时应以 BSM 重算（无风险利率取 0，T 按日历日 / 365）。
+- **`tdx_news` 等资讯工具**：涉及「最近」等相对时间时，应把日期换算成具体 `bdate` / `edate` 再传，否则可能返回过时数据。
 
 ### setcode 对照
 
@@ -81,18 +116,19 @@ tdx_months  →  tdx_chain(month)  →  tdx_quote(setcode=9) 逐腿获取实际�
 
 ## 返回字段
 
-每次调用除业务文本外，还包含以下元信息：
-
 | 字段 | 说明 |
 |---|---|
 | `ok` | 是否成功 |
 | `tool` | 实际调用的服务端工具名 |
-| `version` | 插件版本，便于确认装的是哪一版 |
-| `reinitCount` | 累计会话重建次数；`0` 表示会话一直正常 |
+| `version` | 插件版本 |
+| `reinitCount` | 累计会话重建次数；`0` 表示一直正常 |
 
-### 长响应截断
+### 响应整形与截断
 
-单次返回超过 24,000 字符时自动截断，并附上原始长度与缩小查询范围的建议。这是为了避免挤占模型上下文，不是数据缺失。
+- 资讯类工具返回的 JSON 信封（含 `request_url`、`elapsed_ms` 等）会被剥离，正文还原为 markdown 表格，平均节省 **44%** 字符
+- 单次超过 **24,000 字符**自动截断，并附原始长度与缩小查询范围的建议
+
+截断不是数据缺失，是避免挤占模型上下文。
 
 ---
 
@@ -104,7 +140,7 @@ tdx_months  →  tdx_chain(month)  →  tdx_quote(setcode=9) 逐腿获取实际�
 | `QUOTA_EXHAUSTED` | 通达信配额不足 | 充值后自动恢复 |
 | `SESSION_EXPIRED` | 会话失效且重建失败 | 通常为网络中断，稍后重试 |
 | `TIMEOUT` | 请求超时 | 检查网络后重试 |
-| `FETCH_FAILED` | 服务端返回其他错误 | 检查 token 是否有效 |
+| `FETCH_FAILED` | 其他服务端错误 | 检查 token 是否有效 |
 
 配额不足时服务端返回：
 
@@ -114,8 +150,6 @@ leftValue: <remaining>
 ```
 
 到 <https://vip.tdx.com.cn> 充值即可，无需修改配置。
-
-插件遵循**失败即失败**原则：取数异常时返回明确错误码，不以空值或推测值替代。
 
 ---
 
@@ -127,13 +161,13 @@ leftValue: <remaining>
 | 后续调用（复用会话） | ~150 ms |
 | 10 个并发调用 | ~260 ms，共 1 次握手 |
 
-对比每次新建连接的实现（约 560 ms/次），复用会话约快 3.3 倍。
+对比每次新建连接（约 560 ms/次），复用会话约快 3.3 倍。
 
 ---
 
 ## 兼容性
 
-- 与 `@deepseek-ai/dsh-mcp-client` 可共存，互不干扰
+- 与 `@deepseek-ai/dsh-mcp-client` 可共存
 - 不修改任何既有配置行（`cordis.patch.yml` 仅注册自身）
 - 包内 `scripts/tdx_fetch.cjs` 保留为独立 CLI，可脱离插件单独使用
 

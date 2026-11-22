@@ -45,22 +45,9 @@ try {
 
 // ---------- 结果整形 ----------
 
-/** 从 MCP 工具结果里取可供模型阅读的文本，并去掉候选元数据尾巴。 */
-function textOf(json) {
-  const t = client.extractText(json);
-  return client.stripTail(t);
-}
-
-/** 把超长响应截断，避免撑爆上下文；提示必须可操作。 */
-const MAX_CHARS = 24_000;
-function clamp(text, toolName, hint) {
-  if (text.length <= MAX_CHARS) return text;
-  return (
-    text.slice(0, MAX_CHARS) +
-    `\n\n[已截断] 原始 ${text.length.toLocaleString()} 字符，仅显示前 ${MAX_CHARS.toLocaleString()}。\n` +
-    `原因：${toolName} 返回全量数据。\n` +
-    `建议：${hint || '缩小查询范围（如指定 code / period / 分页）后重试。'}`
-  );
+/** 把响应整形（去元数据尾巴、精简 wenda 信封）并截断；提示必须可操作。 */
+function clamp(json, hint) {
+  return client.shape(json, hint);
 }
 
 /** 统一失败渲染：明确是「没取到数据」，不是「数据为空」。 */
@@ -93,7 +80,7 @@ export function apply(ctx) {
     try {
       const c = await client.getClient();
       const json = await c.callTool(toolName, argBuilder(args ?? {}));
-      const text = clamp(textOf(json), toolName, hint);
+      const text = clamp(json, hint);
       const st = client.stats();
       return {
         ok: true,
@@ -198,6 +185,218 @@ export function apply(ctx) {
         month: String(a.month),
         wantNum: Number(a.wantNum ?? 100),
       }), '降低 wantNum，或指定 underlyPrice 只看平值附近档位。'),
+    },
+
+    // ---------- 查询与筛选 ----------
+
+    {
+      name: 'tdx_lookup',
+      description:
+        '按名称、简称或别名检索证券代码与市场代码。'
+        + '调用其他工具前若不确定代码，应先用它确认；期货用 range=QH，期权标的使用 range=QQ。',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: '证券名称、简称或别名，如「贵州茅台」「茅台」「腾讯」。' },
+          range: {
+            type: 'string',
+            description: '检索范围：AG（A股，默认）、HK-GP（港股）、JJ（基金）、ZS（指数）、QH（期货）、QQ（期权标的）、MG-GP（美股）。',
+          },
+        },
+        required: ['query'],
+        additionalProperties: false,
+      },
+      execute: run('tdx_lookup_stock', (a) => ({
+        query: String(a.query),
+        ...(a.range ? { range: String(a.range) } : {}),
+      })),
+    },
+    {
+      name: 'tdx_screener',
+      description:
+        '按自然语言条件筛选证券，返回符合条件的列表。'
+        + '支持技术面（涨停、放量、MACD 金叉）、资金面（主力净流入、北向流入）、基本面（低 PE、高股息）。'
+        + '适合「找一批股票」，不适合查某只已知股票的指标（那用 tdx_indicator）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          message: { type: 'string', description: '选股条件，如「涨停」「主力净流入」「MACD金叉且放量」。' },
+          range: { type: 'string', description: '范围：AG（A股，默认）、HK-GP（港股）、JJ（基金）、ZS（指数）。' },
+          pageSize: { type: 'number', description: '返回条数，默认 10。' },
+          pageNo: { type: 'number', description: '页码，默认 1。' },
+        },
+        required: ['message'],
+        additionalProperties: false,
+      },
+      execute: run('tdx_screener', (a) => ({
+        message: String(a.message),
+        ...(a.range ? { rang: String(a.range) } : {}),
+        pageSize: String(a.pageSize ?? 10),
+        pageNo: String(a.pageNo ?? 1),
+      }), '减小 pageSize 或换更精确的条件。'),
+    },
+    {
+      name: 'tdx_indicator',
+      description:
+        '查询已知证券的估值与财务指标，一次可取多项：PE(TTM)、PB、ROE、市值、股息率、营收、净利等。'
+        + '支持多标的对比（「贵州茅台和五粮液的市盈率对比」）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          message: { type: 'string', description: '必须同时包含实体与目标，如「贵州茅台 市盈率」「宁德时代 ROE,毛利率」。' },
+          range: { type: 'string', description: '范围：AG（A股个股，默认）、ZS（指数）、JJ（基金）。' },
+        },
+        required: ['message'],
+        additionalProperties: false,
+      },
+      execute: run('tdx_indicator_select', (a) => ({
+        message: String(a.message),
+        ...(a.range ? { rang: String(a.range) } : {}),
+      })),
+    },
+
+    // ---------- F10 深度数据 ----------
+
+    {
+      name: 'tdx_f10',
+      description:
+        '查询个股 F10 结构化资料：财务报表（利润表/资产负债表/现金流量表）、股东与机构持仓、'
+        + '资金流向、分红融资、龙虎榜、主营构成、股本结构等。'
+        + 'entry 必填，需精确指定接口名；不确定时先看返回的可用 entry 列表。默认按页返回以避免超长响应。',
+      parameters: {
+        type: 'object',
+        properties: {
+          entry: {
+            type: 'string',
+            description:
+              '接口名。常用：TdxShareCW.ph_agf10_cw_lyb（利润表）、TdxShareCW.ph_agf10_cw_zcfzb（资产负债表）、'
+              + 'TdxShareCW.ph_agf10_cw_xjllb（现金流量表）、TdxSharePCCW.tdxf10_gg_gdyj（股东）、'
+              + 'TdxSharePCCW.tdxf10_gg_jyds（资金流）、TdxSharePCCW.tdxf10_gg_fhrz（分红）、'
+              + 'TdxSharePCCW.tdxf10_gg_gsgk（公司基本）。',
+          },
+          code: { type: 'string', description: '证券代码（纯数字），如 600519。' },
+          fixedTag: { type: 'string', description: '子类型。财务类：00101=年报、00102=季报；股东类：ltgd=流通股东、jgcg=机构持仓、kggd=控股股东。' },
+          pageNo: { type: 'number', description: '页码，默认 1。' },
+          pageSize: { type: 'number', description: '每页条数，默认 20（服务端上限约 100）。' },
+          reportDate: { type: 'string', description: '报告期，如 20241231。' },
+        },
+        required: ['entry', 'code'],
+        additionalProperties: false,
+      },
+      execute: run('tdx_api_data', (a) => ({
+        entry: String(a.entry),
+        code: String(a.code),
+        ...(a.fixedTag ? { fixedTag: String(a.fixedTag) } : {}),
+        pageNo: String(a.pageNo ?? 1),
+        pageSize: String(a.pageSize ?? 20),
+        ...(a.reportDate ? { reportDate: String(a.reportDate) } : {}),
+      }), '调小 pageSize、指定 reportDate，或换更具体的 entry / fixedTag。'),
+    },
+
+    // ---------- 资讯 ----------
+
+    {
+      name: 'tdx_listening',
+      description:
+        '获取单个标的或板块最近 24 小时的资讯聚合摘要与多空事件分析。'
+        + '适合「最近发生了什么」「有什么重要消息」这类概览需求；要逐条看原文用 tdx_news / tdx_notice / tdx_report。',
+      parameters: {
+        type: 'object',
+        properties: {
+          code: {
+            type: 'string',
+            description: '格式「市场代码_品种代码」：A股 0_000001 / 1_600519 / 2_430047；港股 31_00700；板块 1_880564。',
+          },
+          date: { type: 'string', description: '查询日期 YYYY-MM-DD。缓存约 3 天，超出范围可能返回空。' },
+        },
+        required: ['code'],
+        additionalProperties: false,
+      },
+      execute: run('tdx_ai_listening', (a) => ({
+        setcode_code: String(a.code),
+        ...(a.date ? { date: String(a.date) } : {}),
+      })),
+    },
+    {
+      name: 'tdx_news',
+      description:
+        '查询财经新闻、快讯与主题热点。涉及「最新」「最近」等时效性需求时必须调用，并把日期换算成具体区间传入。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '主体名称：公司名 / 股票名 / 板块名。' },
+          bdate: { type: 'string', description: '起始日期 YYYYMMDD。含相对时间词时必须填写。' },
+          edate: { type: 'string', description: '截止日期 YYYYMMDD，默认今日。' },
+          keywords: { type: 'string', description: '关键词过滤，逗号分隔，如「业绩,营收」。' },
+        },
+        additionalProperties: false,
+      },
+      execute: run('wenda_news_query', (a) => ({
+        ...(a.name ? { name: String(a.name) } : {}),
+        ...(a.bdate ? { bdate: String(a.bdate) } : {}),
+        ...(a.edate ? { edate: String(a.edate) } : {}),
+        ...(a.keywords ? { keywords: String(a.keywords) } : {}),
+      }), '缩小日期区间或增加 keywords 过滤。'),
+    },
+    {
+      name: 'tdx_notice',
+      description:
+        '查询上市公司公告：临时公告、定期报告（年报/季报/半年报）、监管文件等。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '公司全称或简称。' },
+          bdate: { type: 'string', description: '起始日期 YYYYMMDD。含相对时间词时必须填写。' },
+          edate: { type: 'string', description: '截止日期 YYYYMMDD，默认今日。' },
+          keywords: { type: 'string', description: '关键词过滤，如「分红,回购,董事会」。' },
+        },
+        additionalProperties: false,
+      },
+      execute: run('wenda_notice_query', (a) => ({
+        ...(a.name ? { name: String(a.name) } : {}),
+        ...(a.bdate ? { bdate: String(a.bdate) } : {}),
+        ...(a.edate ? { edate: String(a.edate) } : {}),
+        ...(a.keywords ? { keywords: String(a.keywords) } : {}),
+      }), '缩小日期区间或增加 keywords 过滤。'),
+    },
+    {
+      name: 'tdx_report',
+      description:
+        '查询券商研报：评级调整（买入/增持/中性/减持）、目标价、观点摘要、深度报告。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '公司名或行业名，如「比亚迪」「半导体行业」。' },
+          bdate: { type: 'string', description: '起始日期 YYYYMMDD。含「最近」等相对时间时必须填写。' },
+          edate: { type: 'string', description: '截止日期 YYYYMMDD，默认今日。' },
+          keywords: { type: 'string', description: '关键词过滤，如「评级,目标价」。' },
+        },
+        additionalProperties: false,
+      },
+      execute: run('wenda_report_query', (a) => ({
+        ...(a.name ? { name: String(a.name) } : {}),
+        ...(a.bdate ? { bdate: String(a.bdate) } : {}),
+        ...(a.edate ? { edate: String(a.edate) } : {}),
+        ...(a.keywords ? { keywords: String(a.keywords) } : {}),
+      }), '缩小日期区间或增加 keywords 过滤。'),
+    },
+    {
+      name: 'tdx_macro',
+      description:
+        '查询宏观经济数据：GDP、CPI、PPI、社融、M2、利率、汇率、进出口、就业、人口等。'
+        + 'query 必须用管道格式「主体|起始日期|截止日期|关键词|描述」，日期不可留空。',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: '管道格式，如「中国|20260101|20261231||CPI」。五段依次为：主体|bdate|edate|keywords|desc。',
+          },
+        },
+        required: ['query'],
+        additionalProperties: false,
+      },
+      execute: run('wenda_macro_query', (a) => ({ query: String(a.query) })),
     },
   ];
 
