@@ -1,0 +1,48 @@
+{
+  "name": "dsh-tdx-tools",
+  "version": "0.3.0",
+  "description": "DeepSeek Harness 插件：将通达信 MCP 行情服务注册为 13 个原生工具，覆盖实时行情、K 线、期权链、条件选股、F10 财务、新闻公告、研报与宏观数据；共用常驻会话，服务端回收时自动重新握手。",
+  "type": "module",
+  "main": "index.js",
+  "license": "MIT",
+  "author": "",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "mcp",
+    "tdx",
+    "tongdaxin",
+    "options",
+    "quant"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Fahaoxi/dsh-tdx-tools.git"
+  },
+  "homepage": "https://github.com/Fahaoxi/dsh-tdx-tools#readme",
+  "bugs": {
+    "url": "https://github.com/Fahaoxi/dsh-tdx-tools/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "exports": {
+    ".": "./index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "lib/tdx-client.cjs",
+    "cordis.patch.yml",
+    "scripts/tdx_fetch.cjs",
+    "README.md",
+    "LICENSE"
+  ]
+}
