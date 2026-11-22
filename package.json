@@ -1,7 +1,7 @@
 {
   "name": "dsh-tdx-tools",
   "version": "0.3.0",
-  "description": "DeepSeek Harness 插件：将通达信 MCP 行情服务注册为 13 个原生工具，覆盖行情、K 线、期权链、选股、F10 财务与财经资讯，常驻会话自动重连。",
+  "description": "DeepSeek Harness 插件：将通达信 MCP 行情服务注册为 13 个原生工具，覆盖实时行情、K 线、期权链、条件选股、F10 财务、新闻公告、研报与宏观数据；共用常驻会话，服务端回收时自动重新握手。",
   "type": "module",
   "main": "index.js",
   "license": "MIT",
